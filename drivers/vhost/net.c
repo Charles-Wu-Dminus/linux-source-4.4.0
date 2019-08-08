@@ -30,6 +30,11 @@
 
 #include "vhost.h"
 
+/*
+ * cuju support vhost : include
+ */
+#include "cuju_module.h"
+
 static int experimental_zcopytx = 1;
 module_param(experimental_zcopytx, int, 0444);
 MODULE_PARM_DESC(experimental_zcopytx, "Enable Zero Copy TX;"
@@ -389,7 +394,18 @@ static void handle_tx(struct vhost_net *net)
 			ubufs = NULL;
 		}
 		/* TODO: Check specific error and bomb out unless ENOBUFS? */
-		err = sock->ops->sendmsg(sock, &msg, len);
+		//err = sock->ops->sendmsg(sock, &msg, len);
+
+		/*
+		 * cuju support vhost : buffer
+		 */
+		if (cuju_vhost.ftmode) {
+			cuju_vhost_add_buffer(&msg, len);
+			err = len;
+		} else {
+			err = sock->ops->sendmsg(sock, &msg, len);
+		}
+
 		if (unlikely(err < 0)) {
 			if (zcopy_used) {
 				vhost_net_ubuf_put(ubufs);
@@ -662,6 +678,7 @@ static void handle_tx_net(struct vhost_work *work)
 {
 	struct vhost_net *net = container_of(work, struct vhost_net,
 					     poll[VHOST_NET_VQ_TX].work);
+
 	handle_tx(net);
 }
 
@@ -669,6 +686,7 @@ static void handle_rx_net(struct vhost_work *work)
 {
 	struct vhost_net *net = container_of(work, struct vhost_net,
 					     poll[VHOST_NET_VQ_RX].work);
+
 	handle_rx(net);
 }
 
@@ -881,6 +899,7 @@ static long vhost_net_set_backend(struct vhost_net *n, unsigned index, int fd)
 	struct vhost_net_ubuf_ref *ubufs, *oldubufs = NULL;
 	int r;
 
+
 	mutex_lock(&n->dev.mutex);
 	r = vhost_dev_check_owner(&n->dev);
 	if (r)
@@ -893,6 +912,14 @@ static long vhost_net_set_backend(struct vhost_net *n, unsigned index, int fd)
 	vq = &n->vqs[index].vq;
 	nvq = &n->vqs[index];
 	mutex_lock(&vq->mutex);
+
+	/*
+	 * cuju support vhost : snapshot start
+	 */
+	if (cuju_vhost.ftmode && (index == VHOST_NET_VQ_TX) && (fd < 0)) {
+		if (cuju_vhost.buf[cuju_vhost.bnum].knum)
+			cuju_vhost_set_epoch();
+	}
 
 	/* Verify that ring has been setup correctly. */
 	if (!vhost_vq_access_ok(vq)) {
@@ -944,6 +971,14 @@ static long vhost_net_set_backend(struct vhost_net *n, unsigned index, int fd)
 	if (oldsock) {
 		vhost_net_flush_vq(n, index);
 		sockfd_put(oldsock);
+	}
+
+	/*
+	 * cuju support vhost : snapshot stop
+	 */
+	if (cuju_vhost.ftmode && (index == VHOST_NET_VQ_TX)
+				&& vq->private_data) {
+		cuju_vhost.sock = vq->private_data;
 	}
 
 	mutex_unlock(&n->dev.mutex);
